@@ -4,6 +4,8 @@ CRM pessoal para gestão de campo, desenvolvido para acompanhar o ecossistema do
 
 Aplicação em produção: [crm-consultores.eron-tutoreanos.chatgpt.site](https://crm-consultores.eron-tutoreanos.chatgpt.site)
 
+GitHub Pages: [tutoreanos.github.io/SaaS-Tutoreanos](https://tutoreanos.github.io/SaaS-Tutoreanos/)
+
 ## Funcionalidades
 
 - visão 360º das unidades;
@@ -80,4 +82,9 @@ O comando de teste executa o build, valida o artefato de hospedagem e verifica a
 
 ## Publicação
 
-O projeto está preparado para publicação pelo ChatGPT Sites. O arquivo `vercel.json` também mantém compatibilidade de configuração para fluxos baseados em Next.js.
+O projeto mantém dois fluxos independentes:
+
+- ChatGPT Sites, usando o build Vinext;
+- GitHub Pages, usando exportação estática do Next.js e o workflow `.github/workflows/deploy-pages.yml`.
+
+Os próximos commits na branch `main` disparam automaticamente uma nova publicação no GitHub Pages.
