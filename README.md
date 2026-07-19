@@ -19,7 +19,8 @@ GitHub Pages: [tutoreanos.github.io/SaaS-Tutoreanos](https://tutoreanos.github.i
 - biblioteca de KPIs e indicadores personalizados;
 - linha de base, valor atual, meta, periodicidade e histórico de medições;
 - dashboard geral de execução, progresso e evolução dos KPIs;
-- pipeline comercial, contatos, clientes e agenda.
+- pipeline comercial, contatos, clientes e agenda;
+- integração com Google Agenda, seleção de calendário e sincronização de reuniões por unidade ou projeto.
 
 Os modelos padrão permanecem protegidos. Ao editar uma etapa dentro de uma unidade, o CRM personaliza somente o escopo daquele projeto.
 
@@ -63,6 +64,27 @@ As migrations estão em [`supabase/migrations`](supabase/migrations) e devem ser
 
 As tabelas operacionais utilizam políticas de Row Level Security para que cada usuário autenticado acesse somente os próprios registros. Nunca utilize uma chave `service_role` no navegador e não publique o arquivo `.env.local`.
 
+## Google Agenda
+
+A integração usa OAuth 2.0 no fluxo de servidor. Os tokens ficam protegidos no Supabase e nunca são enviados ao GitHub Pages.
+
+1. Ative a **Google Calendar API** no projeto do Google Cloud.
+2. Configure a tela de consentimento OAuth e crie um cliente do tipo **Aplicativo da Web**.
+3. Cadastre esta URI de redirecionamento autorizada:
+
+```text
+https://lytngvxjclycnqiombki.supabase.co/functions/v1/google-calendar/callback
+```
+
+4. Em **Supabase → Edge Functions → Secrets**, adicione:
+
+```text
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+```
+
+O segredo do cliente deve existir apenas no Supabase. Depois disso, use o botão **Conectar Google Agenda** dentro da área Agenda do CRM.
+
 ## Validação
 
 ```bash
@@ -77,6 +99,7 @@ O comando de teste executa o build, valida o artefato de hospedagem e verifica a
 - `app/`: telas, componentes e estilos;
 - `lib/`: tipos, integração Supabase e operações do CRM;
 - `supabase/migrations/`: evolução do banco de dados;
+- `supabase/functions/google-calendar/`: OAuth e sincronização segura com o Google Agenda;
 - `tests/`: testes de renderização;
 - `scripts/`: instalação, build e validação do artefato.
 
@@ -88,3 +111,10 @@ O projeto mantém dois fluxos independentes:
 - GitHub Pages, usando exportação estática do Next.js e o workflow `.github/workflows/deploy-pages.yml`.
 
 Os próximos commits na branch `main` disparam automaticamente uma nova publicação no GitHub Pages.
+
+## Próximo pacote comercial
+
+- cadências e follow-ups programados por lead;
+- qualificação BANT e MEDDIC;
+- anexos e resumos em documento/PDF;
+- funil ampulheta com onboarding, adoção, retenção e upselling após a negociação.

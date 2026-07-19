@@ -194,15 +194,33 @@ export type Activity = {
   user_id: string;
   opportunity_id: string | null;
   client_id: string | null;
+  unit_id: string | null;
+  program_id: string | null;
   title: string;
   details: string | null;
   type: "meeting" | "diagnosis" | "proposal" | "follow_up" | "delivery" | "task";
   due_at: string;
+  ends_at: string | null;
+  location: string | null;
+  attendee_emails: string[];
+  send_invites: boolean;
+  sync_to_google: boolean;
+  google_event_id: string | null;
+  google_calendar_id: string | null;
+  google_event_link: string | null;
+  google_sync_status: "not_synced" | "pending" | "synced" | "error";
+  google_sync_error: string | null;
+  google_last_synced_at: string | null;
   status: ActivityStatus;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
 };
+
+export type ActivityInput = Pick<Activity, "title" | "type" | "due_at"> & Partial<Pick<Activity,
+  "id" | "opportunity_id" | "client_id" | "unit_id" | "program_id" | "details" | "ends_at" |
+  "location" | "attendee_emails" | "send_invites" | "sync_to_google"
+>>;
 
 export type CRMData = {
   units: Unit[];

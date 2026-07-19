@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
-  Activity, CRMData, Client, ConsultingProgram, ConsultingProgramInput, Contact,
+  Activity, ActivityInput, CRMData, Client, ConsultingProgram, ConsultingProgramInput, Contact,
   KpiMeasurement, Opportunity, OpportunityInput, ProgramTemplate, ProgramTemplateInput,
   ProjectItem, ProjectItemInput, ProjectItemStatus, ProjectKpi, ProjectKpiInput,
   Stage, Unit, UnitInput,
@@ -427,8 +427,22 @@ export async function deleteContact(client: SupabaseClient, id: string) {
   fail(error);
 }
 
-export async function saveActivity(client: SupabaseClient, activity: Partial<Activity> & Pick<Activity, "title" | "type" | "due_at">) {
-  const payload = { opportunity_id: activity.opportunity_id || null, client_id: activity.client_id || null, title: activity.title.trim(), details: activity.details?.trim() || null, type: activity.type, due_at: activity.due_at };
+export async function saveActivity(client: SupabaseClient, activity: ActivityInput) {
+  const payload = {
+    opportunity_id: activity.opportunity_id || null,
+    client_id: activity.client_id || null,
+    unit_id: activity.unit_id || null,
+    program_id: activity.program_id || null,
+    title: activity.title.trim(),
+    details: activity.details?.trim() || null,
+    type: activity.type,
+    due_at: activity.due_at,
+    ends_at: activity.ends_at || null,
+    location: activity.location?.trim() || null,
+    attendee_emails: activity.attendee_emails ?? [],
+    send_invites: activity.send_invites ?? false,
+    sync_to_google: activity.sync_to_google ?? false,
+  };
   if (activity.id) {
     const { error } = await client.from("activities").update(payload).eq("id", activity.id);
     fail(error);

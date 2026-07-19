@@ -6,9 +6,9 @@ import {
   Archive, ArrowLeft, ArrowRight, BarChart3, Bell, BookOpen, Building2, CalendarDays, Check,
   CheckCircle2, ChevronRight, CircleDollarSign, CircleX,
   CircleGauge, ClipboardList, Clock3, Download, FileJson, HeartPulse, Layers3,
-  LayoutDashboard, LoaderCircle, LogOut, Mail, MapPin, Menu, MoreHorizontal,
+  ExternalLink, LayoutDashboard, Link2, LoaderCircle, LogOut, Mail, MapPin, Menu, MoreHorizontal,
   Pencil, Phone, Plus, Route, Save, Search, Sparkles, Target, Trash2,
-  TrendingUp, Trophy, Upload, UserPlus, UsersRound, X,
+  TrendingUp, Trophy, Unplug, Upload, UserPlus, UsersRound, X, RefreshCw,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { KpiModal, ProjectItemModal, ProjectsArea } from "@/app/projects";
@@ -21,8 +21,16 @@ import {
   updateProgramPhase,
   updateOpportunityStatus,
 } from "@/lib/crm";
+import {
+  deleteActivityFromGoogle, disconnectGoogleCalendar, getGoogleCalendarStatus,
+  listGoogleCalendarEvents, listGoogleCalendars, selectGoogleCalendar,
+  startGoogleCalendarConnection, syncActivityToGoogle,
+} from "@/lib/google-calendar";
 import type {
-  Activity, Client, ConsultingProgram, ConsultingProgramInput, Contact, CRMData,
+  GoogleCalendarEvent, GoogleCalendarOption, GoogleCalendarStatus,
+} from "@/lib/google-calendar";
+import type {
+  Activity, ActivityInput, Client, ConsultingProgram, ConsultingProgramInput, Contact, CRMData,
   Opportunity, OpportunityInput, Priority, ProgramRole, ProgramStatus, ProjectItem,
   ProjectItemInput, ProjectItemStatus, ProjectKpi, ProjectKpiInput,
   ProgramTemplate, ProgramTemplateInput, Stage, Unit, UnitInput, View,
@@ -115,6 +123,11 @@ export default function Home() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectItemModal, setProjectItemModal] = useState<{ initial: ProjectItem | null; programId: string; defaultStatus: ProjectItemStatus; defaultPhaseIndex: number | null } | null>(null);
   const [kpiModal, setKpiModal] = useState<ProjectKpi | "new" | null>(null);
+  const [googleCalendar, setGoogleCalendar] = useState<GoogleCalendarStatus | null>(null);
+  const [googleCalendars, setGoogleCalendars] = useState<GoogleCalendarOption[]>([]);
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: auth }) => {
@@ -147,6 +160,22 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user.id]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("google_calendar");
+    if (!result) return;
+    const timer = window.setTimeout(() => {
+      setActiveView("agenda");
+      if (result === "connected") setNotice("Google Agenda conectado");
+      else setError(params.get("google_calendar_message") || "Não foi possível conectar o Google Agenda.");
+      params.delete("google_calendar");
+      params.delete("google_calendar_message");
+      const queryString = params.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${queryString ? `?${queryString}` : ""}${window.location.hash}`);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   function toast(message: string) {
     setNotice(message); window.setTimeout(() => setNotice(""), 2600);
   }
@@ -159,6 +188,81 @@ export default function Home() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "A operação não pôde ser concluída.");
     } finally { setBusy(false); }
+  }
+
+  async function reloadGoogleCalendar(silent = false) {
+    if (!session) return;
+    if (!silent) setGoogleLoading(true);
+    try {
+      const status = await getGoogleCalendarStatus();
+      setGoogleCalendar(status);
+      if (status.connected) {
+        const [calendarsResult, eventsResult] = await Promise.all([
+          listGoogleCalendars(),
+          listGoogleCalendarEvents(),
+        ]);
+        setGoogleCalendars(calendarsResult.calendars);
+        setGoogleEvents(eventsResult.events);
+      } else {
+        setGoogleCalendars([]);
+        setGoogleEvents([]);
+      }
+    } catch (cause) {
+      if (!silent) setError(cause instanceof Error ? cause.message : "Não foi possível carregar o Google Agenda.");
+    } finally {
+      if (!silent) setGoogleLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!session || activeView !== "agenda") return;
+    const timer = window.setTimeout(() => { void reloadGoogleCalendar(); }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user.id, activeView]);
+
+  async function connectGoogleCalendar() {
+    setGoogleBusy(true); setError("");
+    try {
+      await startGoogleCalendarConnection();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível iniciar a conexão com o Google.");
+      setGoogleBusy(false);
+    }
+  }
+
+  async function chooseGoogleCalendar(calendarId: string) {
+    setGoogleBusy(true); setError("");
+    try {
+      await selectGoogleCalendar(calendarId);
+      await reloadGoogleCalendar(true);
+      toast("Agenda padrão atualizada");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível selecionar a agenda.");
+    } finally { setGoogleBusy(false); }
+  }
+
+  async function refreshGoogleEvents() {
+    setGoogleBusy(true); setError("");
+    try {
+      await reloadGoogleCalendar(true);
+      toast("Compromissos atualizados");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar os compromissos.");
+    } finally { setGoogleBusy(false); }
+  }
+
+  async function disconnectGoogle() {
+    if (!window.confirm("Desconectar o Google Agenda? Os eventos já criados continuarão na sua agenda.")) return;
+    setGoogleBusy(true); setError("");
+    try {
+      await disconnectGoogleCalendar();
+      await reload(true);
+      await reloadGoogleCalendar(true);
+      toast("Google Agenda desconectado");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível desconectar o Google Agenda.");
+    } finally { setGoogleBusy(false); }
   }
 
   const openOpportunities = data.opportunities.filter((item) => item.status === "open");
@@ -230,9 +334,22 @@ export default function Home() {
     setContactModal(null);
   }
 
-  async function submitActivity(activity: Partial<Activity> & Pick<Activity, "title" | "type" | "due_at">) {
-    await perform(async () => { await saveActivity(supabase, activity); }, activity.id ? "Atividade atualizada" : "Atividade criada", "agenda");
-    setActivityModal(null);
+  async function submitActivity(activity: ActivityInput) {
+    let completed = false;
+    await perform(async () => {
+      const previous = activity.id ? data.activities.find((item) => item.id === activity.id) : null;
+      if (previous?.google_event_id && !activity.sync_to_google && !googleCalendar?.connected) {
+        throw new Error("Reconecte o Google Agenda antes de remover este evento sincronizado.");
+      }
+      const id = await saveActivity(supabase, activity);
+      if (activity.sync_to_google) await syncActivityToGoogle(id);
+      else if (previous?.google_event_id) await deleteActivityFromGoogle(id);
+      completed = true;
+    }, activity.id ? "Atividade atualizada" : "Atividade criada", "agenda");
+    if (completed) {
+      setActivityModal(null);
+      void reloadGoogleCalendar(true);
+    }
   }
 
   async function completeActivity(activity: Activity) {
@@ -241,7 +358,11 @@ export default function Home() {
 
   async function removeActivity(activity: Activity) {
     if (!window.confirm(`Excluir a atividade “${activity.title}”?`)) return;
-    await perform(async () => { await deleteActivity(supabase, activity.id); }, "Atividade excluída");
+    await perform(async () => {
+      if (activity.google_event_id && googleCalendar?.connected) await deleteActivityFromGoogle(activity.id);
+      await deleteActivity(supabase, activity.id);
+    }, "Atividade excluída");
+    void reloadGoogleCalendar(true);
   }
 
   async function submitClient(id: string, payload: Partial<Client>) {
@@ -396,6 +517,8 @@ export default function Home() {
     ? { label: "Nova unidade", icon: <Plus size={18} />, run: () => setUnitModal("new") }
     : activeView === "programs"
       ? { label: "Novo modelo", icon: <Plus size={18} />, run: () => setTemplateModal("new") }
+      : activeView === "agenda"
+        ? { label: "Nova atividade", icon: <Plus size={18} />, run: () => setActivityModal("new") }
       : { label: "Nova oportunidade", icon: <Plus size={18} />, run: () => setOpportunityModal("new") };
 
   return <div className="crm-shell">
@@ -418,14 +541,14 @@ export default function Home() {
         {activeView === "pipeline" && <PipelineView opportunities={filteredOpportunities} totalPipeline={totalPipeline} weightedPipeline={weightedPipeline} query={query} setQuery={setQuery} onSelect={setSelectedOpportunity} onMove={handleMove} onAdd={() => setOpportunityModal("new")} onImport={importCsv} onExport={exportOpportunities} />}
         {activeView === "contacts" && <ContactsView contacts={filteredContacts} query={query} setQuery={setQuery} onAdd={() => setContactModal("new")} onEdit={setContactModal} />}
         {activeView === "clients" && <ClientsView clients={data.clients} onEdit={setClientModal} />}
-        {activeView === "agenda" && <AgendaView activities={data.activities} onAdd={() => setActivityModal("new")} onEdit={setActivityModal} onComplete={completeActivity} onDelete={removeActivity} />}
+        {activeView === "agenda" && <AgendaView activities={data.activities} googleCalendar={googleCalendar} googleCalendars={googleCalendars} googleEvents={googleEvents} googleLoading={googleLoading} googleBusy={googleBusy} onConnectGoogle={() => void connectGoogleCalendar()} onDisconnectGoogle={() => void disconnectGoogle()} onSelectGoogleCalendar={(id) => void chooseGoogleCalendar(id)} onRefreshGoogle={() => void refreshGoogleEvents()} onAdd={() => setActivityModal("new")} onEdit={setActivityModal} onComplete={completeActivity} onDelete={removeActivity} />}
         {activeView === "reports" && <ReportsView opportunities={data.opportunities} clients={data.clients} activities={data.activities} totalPipeline={totalPipeline} weightedPipeline={weightedPipeline} conversion={conversion} onBackup={exportBackup} />}
       </>}
     </main>
 
     {opportunityModal && <OpportunityModal initial={opportunityModal === "new" ? null : opportunityModal} busy={busy} onClose={() => setOpportunityModal(null)} onSubmit={submitOpportunity} />}
     {contactModal && <ContactModal initial={contactModal === "new" ? null : contactModal} busy={busy} onClose={() => setContactModal(null)} onSubmit={submitContact} onDelete={removeContact} />}
-    {activityModal && <ActivityModal initial={activityModal === "new" ? null : activityModal} opportunities={openOpportunities} clients={data.clients} busy={busy} onClose={() => setActivityModal(null)} onSubmit={submitActivity} />}
+    {activityModal && <ActivityModal initial={activityModal === "new" ? null : activityModal} opportunities={openOpportunities} clients={data.clients} units={data.units} programs={data.consultingPrograms} googleConnected={Boolean(googleCalendar?.connected)} busy={busy} onClose={() => setActivityModal(null)} onSubmit={submitActivity} />}
     {clientModal && <ClientModal client={clientModal} busy={busy} onClose={() => setClientModal(null)} onSubmit={submitClient} onDelete={removeClient} />}
     {unitModal && <UnitModal initial={unitModal === "new" ? null : unitModal} busy={busy} onClose={() => setUnitModal(null)} onSubmit={submitUnit} onDelete={removeUnit} />}
     {templateModal && <ProgramTemplateModal initial={templateModal === "new" ? null : templateModal} busy={busy} onClose={() => setTemplateModal(null)} onSubmit={submitTemplate} onDelete={removeTemplate} />}
@@ -578,9 +701,50 @@ function ClientsView({ clients, onEdit }: { clients: Client[]; onEdit: (client: 
   return <section className="view-stack"><div className="client-overview"><MiniMetric label="Clientes ativos" value={String(active.length)} /><MiniMetric label="Receita recorrente" value={money.format(recurring)} /><MiniMetric label="Saúde média" value={`${health}%`} /><MiniMetric label="Projetos concluídos" value={String(clients.filter((item) => item.status === "completed").length)} /></div>{clients.length ? <div className="client-grid">{clients.map((client) => <article className="client-card" key={client.id}><div className="client-top"><span className="avatar client-avatar">{initials(client.name)}</span><div><h2>{client.name}</h2><span>{client.project}</span></div><button className="icon-button" onClick={() => onEdit(client)} aria-label={`Editar ${client.name}`}><Pencil size={16} /></button></div><div className="health-row"><span>Saúde da conta</span><strong className={client.health >= 75 ? "green" : client.health >= 55 ? "orange" : "red"}>{client.health}%</strong></div><div className="health-bar"><i className={client.health >= 75 ? "green" : client.health >= 55 ? "orange" : "red"} style={{ width: `${client.health}%` }} /></div><dl><div><dt>Valor mensal</dt><dd>{money.format(client.monthly_value)}</dd></div><div><dt>Progresso</dt><dd>{client.progress}%</dd></div></dl><div className="client-next"><CalendarDays size={16} /><span><small>Próxima ação</small><strong>{client.next_action || "Definir próximo passo"}</strong></span></div><button className="card-action" onClick={() => onEdit(client)}>Gerenciar cliente <ArrowRight size={15} /></button></article>)}</div> : <EmptyState icon={<Building2 />} title="Nenhum cliente ativo" text="Ao marcar uma oportunidade como ganha, o cliente será criado automaticamente." />}</section>;
 }
 
-function AgendaView({ activities, onAdd, onEdit, onComplete, onDelete }: { activities: Activity[]; onAdd: () => void; onEdit: (activity: Activity) => void; onComplete: (activity: Activity) => void; onDelete: (activity: Activity) => void }) {
-  const pending = activities.filter((item) => item.status === "pending"); const done = activities.filter((item) => item.status === "done");
-  return <section className="view-stack"><div className="list-toolbar"><div className="mini-metrics agenda-metrics"><MiniMetric label="Pendentes" value={String(pending.length)} /><MiniMetric label="Concluídas" value={String(done.length)} /><MiniMetric label="Atrasadas" value={String(pending.filter((item) => new Date(item.due_at) < new Date()).length)} /></div><button className="primary-button" onClick={onAdd}><Plus size={16} /> Nova atividade</button></div><div className="panel activity-panel"><div className="table-summary"><div><span className="eyebrow">PRÓXIMOS PASSOS</span><h2>Atividades</h2></div><span>{activities.length} registros</span></div>{activities.length ? <div className="activity-list">{activities.map((activity) => <article className={`activity-row ${activity.status}`} key={activity.id}><button className="activity-check" aria-label="Concluir atividade" disabled={activity.status !== "pending"} onClick={() => onComplete(activity)}>{activity.status === "done" ? <Check size={15} /> : <span />}</button><span className={`activity-type ${activity.type}`}>{activity.type.replace("_", " ")}</span><button className="activity-main" onClick={() => onEdit(activity)}><strong>{activity.title}</strong><small>{activity.details || "Sem observações"}</small></button><span className={activity.status === "pending" && new Date(activity.due_at) < new Date() ? "activity-date overdue" : "activity-date"}><Clock3 size={14} /> {dateTime.format(new Date(activity.due_at))}</span><button className="icon-button small" onClick={() => onEdit(activity)} aria-label="Editar"><Pencil size={14} /></button><button className="icon-button small danger" onClick={() => onDelete(activity)} aria-label="Excluir"><Trash2 size={14} /></button></article>)}</div> : <EmptyState icon={<CalendarDays />} title="Agenda vazia" text="Crie follow-ups, reuniões e tarefas para manter o ritmo comercial." action="Nova atividade" onAction={onAdd} />}</div></section>;
+function AgendaView({ activities, googleCalendar, googleCalendars, googleEvents, googleLoading, googleBusy, onConnectGoogle, onDisconnectGoogle, onSelectGoogleCalendar, onRefreshGoogle, onAdd, onEdit, onComplete, onDelete }: {
+  activities: Activity[];
+  googleCalendar: GoogleCalendarStatus | null;
+  googleCalendars: GoogleCalendarOption[];
+  googleEvents: GoogleCalendarEvent[];
+  googleLoading: boolean;
+  googleBusy: boolean;
+  onConnectGoogle: () => void;
+  onDisconnectGoogle: () => void;
+  onSelectGoogleCalendar: (id: string) => void;
+  onRefreshGoogle: () => void;
+  onAdd: () => void;
+  onEdit: (activity: Activity) => void;
+  onComplete: (activity: Activity) => void;
+  onDelete: (activity: Activity) => void;
+}) {
+  const pending = activities.filter((item) => item.status === "pending");
+  const done = activities.filter((item) => item.status === "done");
+  const synced = activities.filter((item) => item.google_sync_status === "synced");
+  return <section className="view-stack">
+    <GoogleCalendarPanel status={googleCalendar} calendars={googleCalendars} events={googleEvents} loading={googleLoading} busy={googleBusy} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} onSelectCalendar={onSelectGoogleCalendar} onRefresh={onRefreshGoogle} />
+    <div className="list-toolbar"><div className="mini-metrics agenda-metrics"><MiniMetric label="Pendentes" value={String(pending.length)} /><MiniMetric label="Concluídas" value={String(done.length)} /><MiniMetric label="Atrasadas" value={String(pending.filter((item) => new Date(item.due_at) < new Date()).length)} /><MiniMetric label="No Google" value={String(synced.length)} /></div><button className="primary-button" onClick={onAdd}><Plus size={16} /> Nova atividade</button></div>
+    <div className="panel activity-panel"><div className="table-summary"><div><span className="eyebrow">PRÓXIMOS PASSOS</span><h2>Atividades do CRM</h2></div><span>{activities.length} registros</span></div>{activities.length ? <div className="activity-list">{activities.map((activity) => <article className={`activity-row ${activity.status}`} key={activity.id}><button className="activity-check" aria-label="Concluir atividade" disabled={activity.status !== "pending"} onClick={() => onComplete(activity)}>{activity.status === "done" ? <Check size={15} /> : <span />}</button><span className={`activity-type ${activity.type}`}>{activity.type.replace("_", " ")}</span><button className="activity-main" onClick={() => onEdit(activity)}><strong>{activity.title}</strong><small>{activity.details || "Sem observações"}</small>{activity.google_sync_status !== "not_synced" && <em className={`google-sync-pill ${activity.google_sync_status}`}><CalendarDays size={11} /> {activity.google_sync_status === "synced" ? "Google Agenda" : activity.google_sync_status === "error" ? "Erro de sincronização" : "Sincronizando"}</em>}</button><span className={activity.status === "pending" && new Date(activity.due_at) < new Date() ? "activity-date overdue" : "activity-date"}><Clock3 size={14} /> {dateTime.format(new Date(activity.due_at))}</span>{activity.google_event_link && <a className="icon-button small google-link" href={activity.google_event_link} target="_blank" rel="noreferrer" aria-label="Abrir no Google Agenda"><ExternalLink size={14} /></a>}<button className="icon-button small" onClick={() => onEdit(activity)} aria-label="Editar"><Pencil size={14} /></button><button className="icon-button small danger" onClick={() => onDelete(activity)} aria-label="Excluir"><Trash2 size={14} /></button></article>)}</div> : <EmptyState icon={<CalendarDays />} title="Agenda vazia" text="Crie follow-ups, reuniões e tarefas para manter o ritmo comercial." action="Nova atividade" onAction={onAdd} />}</div>
+  </section>;
+}
+
+function GoogleCalendarPanel({ status, calendars, events, loading, busy, onConnect, onDisconnect, onSelectCalendar, onRefresh }: {
+  status: GoogleCalendarStatus | null;
+  calendars: GoogleCalendarOption[];
+  events: GoogleCalendarEvent[];
+  loading: boolean;
+  busy: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onSelectCalendar: (id: string) => void;
+  onRefresh: () => void;
+}) {
+  return <>
+    <section className="panel google-calendar-panel">
+      <div className="google-calendar-brand"><span className="google-calendar-icon"><CalendarDays size={22} /></span><div><span className="eyebrow">INTEGRAÇÃO DE AGENDA</span><h2>Google Agenda</h2><p>Centralize compromissos e sincronize reuniões dos projetos.</p></div></div>
+      {loading ? <div className="google-calendar-loading"><LoaderCircle className="spin" size={19} /> Verificando conexão</div> : !status ? <div className="google-calendar-loading">Aguardando status da integração</div> : !status.configured ? <div className="google-calendar-setup"><span><strong>Configuração segura pendente</strong><small>Adicione as credenciais OAuth do Google Cloud no Supabase para liberar a conexão.</small></span><code>{status.redirect_uri}</code></div> : !status.connected ? <div className="google-calendar-connect"><span><strong>Conecte sua conta Google</strong><small>O CRM solicitará somente acesso às agendas e aos eventos autorizados.</small></span><button className="primary-button" disabled={busy} onClick={onConnect}><Link2 size={16} /> Conectar Google Agenda</button></div> : <div className="google-calendar-connected"><div className="google-account"><span className="connection-dot" /><span><strong>{status.connection?.google_email || "Conta Google conectada"}</strong><small>Sincronização ativa</small></span></div><label>Agenda padrão<select value={status.connection?.calendar_id || "primary"} disabled={busy} onChange={(event) => onSelectCalendar(event.target.value)}>{calendars.length ? calendars.map((calendar) => <option value={calendar.id} key={calendar.id}>{calendar.summary}{calendar.primary ? " · principal" : ""}</option>) : <option value={status.connection?.calendar_id || "primary"}>{status.connection?.calendar_summary || "Agenda principal"}</option>}</select></label><div className="google-calendar-actions"><button className="secondary-button" disabled={busy} onClick={onRefresh}><RefreshCw size={15} className={busy ? "spin" : ""} /> Atualizar</button><button className="secondary-button disconnect" disabled={busy} onClick={onDisconnect}><Unplug size={15} /> Desconectar</button></div></div>}
+    </section>
+    {status?.connected && <section className="panel google-events-panel"><div className="table-summary"><div><span className="eyebrow">AGENDA GOOGLE</span><h2>Próximos compromissos</h2></div><span>{events.length} eventos</span></div>{events.length ? <div className="google-event-list">{events.slice(0, 12).map((event) => <article key={event.id}><span className="google-event-date"><strong>{event.all_day ? shortDate.format(new Date(`${event.starts_at}T12:00:00`)) : shortDate.format(new Date(event.starts_at))}</strong><small>{event.all_day ? "Dia inteiro" : new Date(event.starts_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small></span><span><strong>{event.title}</strong><small>{event.location || event.description || "Compromisso do Google Agenda"}</small></span>{event.html_link && <a href={event.html_link} target="_blank" rel="noreferrer" aria-label={`Abrir ${event.title} no Google Agenda`}><ExternalLink size={15} /></a>}</article>)}</div> : <div className="google-events-empty"><CalendarDays size={20} /><span><strong>Nenhum compromisso futuro</strong><small>A agenda selecionada está livre no período consultado.</small></span></div>}</section>}
+  </>;
 }
 
 function ReportsView({ opportunities, clients, activities, totalPipeline, weightedPipeline, conversion, onBackup }: { opportunities: Opportunity[]; clients: Client[]; activities: Activity[]; totalPipeline: number; weightedPipeline: number; conversion: number; onBackup: () => void }) {
@@ -701,10 +865,65 @@ function ContactModal({ initial, busy, onClose, onSubmit, onDelete }: { initial:
   return <Modal title={initial ? "Editar contato" : "Novo contato"} kicker="RELACIONAMENTO" onClose={onClose}><form onSubmit={submit}><label>Nome<input name="name" required defaultValue={initial?.name} /></label><div className="form-row"><label>Empresa<input name="company" required defaultValue={initial?.company} /></label><label>Cargo<input name="role" defaultValue={initial?.role || ""} /></label></div><div className="form-row"><label>E-mail<input name="email" type="email" defaultValue={initial?.email || ""} /></label><label>Telefone<input name="phone" defaultValue={initial?.phone || ""} /></label></div><label>Segmento<input name="segment" required defaultValue={initial?.segment || "Serviços"} /></label><label>Observações<textarea name="notes" rows={3} defaultValue={initial?.notes || ""} /></label><div className="modal-footer">{initial && <button className="danger-button" type="button" onClick={() => onDelete(initial)}><Trash2 size={15} /> Excluir</button>}<ModalActions busy={busy} onClose={onClose} label="Salvar contato" /></div></form></Modal>;
 }
 
-function ActivityModal({ initial, opportunities, clients, busy, onClose, onSubmit }: { initial: Activity | null; opportunities: Opportunity[]; clients: Client[]; busy: boolean; onClose: () => void; onSubmit: (activity: Partial<Activity> & Pick<Activity, "title" | "type" | "due_at">) => void }) {
-  const [defaultDueAt] = useState(() => toDateInput(new Date(Date.now() + 86400000).toISOString()));
-  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); onSubmit({ id: initial?.id, title: String(form.get("title")), type: String(form.get("type")) as Activity["type"], due_at: new Date(String(form.get("due_at"))).toISOString(), details: String(form.get("details") || ""), opportunity_id: String(form.get("opportunity_id") || "") || null, client_id: String(form.get("client_id") || "") || null }); }
-  return <Modal title={initial ? "Editar atividade" : "Nova atividade"} kicker="AGENDA" onClose={onClose}><form onSubmit={submit}><label>Título<input name="title" required defaultValue={initial?.title} placeholder="Ex.: Follow-up da proposta" /></label><div className="form-row"><label>Tipo<select name="type" defaultValue={initial?.type || "follow_up"}><option value="meeting">Reunião</option><option value="diagnosis">Diagnóstico</option><option value="proposal">Proposta</option><option value="follow_up">Follow-up</option><option value="delivery">Entrega</option><option value="task">Tarefa</option></select></label><label>Data e hora<input name="due_at" type="datetime-local" required defaultValue={toDateInput(initial?.due_at) || defaultDueAt} /></label></div><div className="form-row"><label>Oportunidade<select name="opportunity_id" defaultValue={initial?.opportunity_id || ""}><option value="">Nenhuma</option>{opportunities.map((item) => <option value={item.id} key={item.id}>{item.company}</option>)}</select></label><label>Cliente<select name="client_id" defaultValue={initial?.client_id || ""}><option value="">Nenhum</option>{clients.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label></div><label>Detalhes<textarea name="details" rows={3} defaultValue={initial?.details || ""} /></label><ModalActions busy={busy} onClose={onClose} label="Salvar atividade" /></form></Modal>;
+function ActivityModal({ initial, opportunities, clients, units, programs, googleConnected, busy, onClose, onSubmit }: {
+  initial: Activity | null;
+  opportunities: Opportunity[];
+  clients: Client[];
+  units: Unit[];
+  programs: ConsultingProgram[];
+  googleConnected: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (activity: ActivityInput) => void;
+}) {
+  const [initialStart] = useState(() => toDateInput(initial?.due_at) || toDateInput(new Date(Date.now() + 86400000).toISOString()));
+  const [initialEnd] = useState(() => toDateInput(initial?.ends_at) || toDateInput(new Date(new Date(initial?.due_at || Date.now() + 86400000).getTime() + 60 * 60_000).toISOString()));
+  const [startAt, setStartAt] = useState(initialStart);
+  const [endAt, setEndAt] = useState(initialEnd);
+  const [unitId, setUnitId] = useState(initial?.unit_id || "");
+  const [programId, setProgramId] = useState(initial?.program_id || "");
+  const [syncGoogle, setSyncGoogle] = useState(Boolean(initial?.sync_to_google));
+  const unitPrograms = programs.filter((program) => !unitId || program.unit_id === unitId);
+
+  function changeStart(value: string) {
+    setStartAt(value);
+    if (!endAt || new Date(endAt) <= new Date(value)) setEndAt(toDateInput(new Date(new Date(value).getTime() + 60 * 60_000).toISOString()));
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const chosenProgram = programs.find((program) => program.id === programId);
+    const attendeeEmails = String(form.get("attendee_emails") || "").split(/[;,\n]/).map((email) => email.trim().toLocaleLowerCase()).filter(Boolean);
+    onSubmit({
+      id: initial?.id,
+      title: String(form.get("title")),
+      type: String(form.get("type")) as Activity["type"],
+      due_at: new Date(startAt).toISOString(),
+      ends_at: new Date(endAt).toISOString(),
+      details: String(form.get("details") || ""),
+      location: String(form.get("location") || ""),
+      attendee_emails: attendeeEmails,
+      send_invites: form.get("send_invites") === "on",
+      sync_to_google: syncGoogle,
+      opportunity_id: String(form.get("opportunity_id") || "") || null,
+      client_id: String(form.get("client_id") || "") || null,
+      unit_id: chosenProgram?.unit_id || unitId || null,
+      program_id: programId || null,
+    });
+  }
+
+  return <Modal title={initial ? "Editar atividade" : "Nova atividade"} kicker="AGENDA INTEGRADA" onClose={onClose}><form onSubmit={submit}>
+    <label>Título<input name="title" required defaultValue={initial?.title} placeholder="Ex.: Reunião de acompanhamento da unidade" /></label>
+    <div className="form-row three"><label>Tipo<select name="type" defaultValue={initial?.type || "follow_up"}><option value="meeting">Reunião</option><option value="diagnosis">Diagnóstico</option><option value="proposal">Proposta</option><option value="follow_up">Follow-up</option><option value="delivery">Entrega</option><option value="task">Tarefa</option></select></label><label>Início<input name="due_at" type="datetime-local" required value={startAt} onChange={(event) => changeStart(event.target.value)} /></label><label>Término<input name="ends_at" type="datetime-local" required min={startAt} value={endAt} onChange={(event) => setEndAt(event.target.value)} /></label></div>
+    <div className="form-row"><label>Unidade<select name="unit_id" value={unitId} onChange={(event) => { setUnitId(event.target.value); setProgramId(""); }}><option value="">Nenhuma</option>{units.map((unit) => <option value={unit.id} key={unit.id}>{unit.name}</option>)}</select></label><label>Projeto<select name="program_id" value={programId} onChange={(event) => { const value = event.target.value; setProgramId(value); const project = programs.find((program) => program.id === value); if (project) setUnitId(project.unit_id); }}><option value="">Nenhum</option>{unitPrograms.map((program) => <option value={program.id} key={program.id}>{program.name}</option>)}</select></label></div>
+    <div className="form-row"><label>Oportunidade<select name="opportunity_id" defaultValue={initial?.opportunity_id || ""}><option value="">Nenhuma</option>{opportunities.map((item) => <option value={item.id} key={item.id}>{item.company}</option>)}</select></label><label>Cliente<select name="client_id" defaultValue={initial?.client_id || ""}><option value="">Nenhum</option>{clients.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label></div>
+    <div className="form-row"><label>Local ou link da reunião<input name="location" defaultValue={initial?.location || ""} placeholder="Google Meet, endereço ou sala" /></label><label>Convidados<input name="attendee_emails" type="text" defaultValue={initial?.attendee_emails.join(", ") || ""} placeholder="email1@empresa.com, email2@empresa.com" /></label></div>
+    <label>Detalhes<textarea name="details" rows={3} defaultValue={initial?.details || ""} placeholder="Pauta, objetivo e resultado esperado" /></label>
+    <section className={`activity-google-box ${syncGoogle ? "selected" : ""}`}><span className="google-calendar-icon small"><CalendarDays size={18} /></span><span><strong>Sincronizar com o Google Agenda</strong><small>{googleConnected ? "O evento será criado ou atualizado na agenda selecionada." : "Conecte sua conta Google na tela de Agenda para habilitar."}</small>{initial?.google_sync_error && <em>{initial.google_sync_error}</em>}</span><label className="switch"><input type="checkbox" checked={syncGoogle} disabled={!googleConnected} onChange={(event) => setSyncGoogle(event.target.checked)} /><i /></label></section>
+    {syncGoogle && <label className="invite-toggle"><input type="checkbox" name="send_invites" defaultChecked={initial?.send_invites ?? false} /><span><strong>Enviar convites aos participantes</strong><small>O Google notificará os e-mails informados quando o evento for salvo.</small></span></label>}
+    <ModalActions busy={busy} onClose={onClose} label={syncGoogle ? "Salvar e sincronizar" : "Salvar atividade"} />
+  </form></Modal>;
 }
 
 function ClientModal({ client, busy, onClose, onSubmit, onDelete }: { client: Client; busy: boolean; onClose: () => void; onSubmit: (id: string, payload: Partial<Client>) => void; onDelete: (client: Client) => void }) {
