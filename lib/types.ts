@@ -1,4 +1,4 @@
-export type View = "overview" | "projects" | "units" | "programs" | "pipeline" | "contacts" | "clients" | "agenda" | "reports";
+export type View = "overview" | "projects" | "units" | "programs" | "pipeline" | "contacts" | "clients" | "agenda" | "reports" | "copilot";
 export type Stage = "lead" | "qualification" | "diagnosis" | "proposal" | "negotiation";
 export type Priority = "normal" | "attention" | "urgent";
 export type OpportunityStatus = "open" | "won" | "lost" | "archived";

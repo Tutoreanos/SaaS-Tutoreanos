@@ -2,3 +2,6 @@ project_id = "nexo-crm"
 
 [functions.google-calendar]
 verify_jwt = false
+
+[functions.ai-copilot]
+verify_jwt = false

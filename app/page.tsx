@@ -7,11 +7,13 @@ import {
   CheckCircle2, ChevronRight, CircleDollarSign, CircleX,
   CircleGauge, ClipboardList, Clock3, Download, FileJson, HeartPulse, Layers3,
   ExternalLink, LayoutDashboard, Link2, LoaderCircle, LogOut, Mail, MapPin, Menu, MoreHorizontal,
-  Pencil, Phone, Plus, Route, Save, Search, Sparkles, Target, Trash2,
+  Bot, Pencil, Phone, Plus, Route, Save, Search, Sparkles, Target, Trash2,
   TrendingUp, Trophy, Unplug, Upload, UserPlus, UsersRound, X, RefreshCw,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { KpiModal, ProjectItemModal, ProjectsArea } from "@/app/projects";
+import { AICopilot } from "@/app/ai-copilot";
+import type { AiProjectDraft } from "@/lib/ai";
 import {
   convertToClient, deleteActivity, deleteClient, deleteConsultingProgram, deleteProjectItem, deleteProjectKpi,
   deleteContact, deleteOpportunity, deleteProgramTemplate, deleteUnit,
@@ -44,6 +46,7 @@ const stages: { id: Stage; label: string }[] = [
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
+  { id: "copilot", label: "Copiloto IA", icon: Bot },
   { id: "projects", label: "Projetos", icon: Route },
   { id: "units", label: "Unidades", icon: Building2 },
   { id: "programs", label: "Programas", icon: BookOpen },
@@ -64,6 +67,7 @@ const headings: Record<View, { kicker: string; title: string; subtitle: string }
   clients: { kicker: "CARTEIRA ATIVA", title: "Clientes", subtitle: "Projetos, saúde da conta e expansão." },
   agenda: { kicker: "RITMO COMERCIAL", title: "Agenda", subtitle: "Reuniões, entregas e follow-ups." },
   reports: { kicker: "INTELIGÊNCIA COMERCIAL", title: "Relatórios", subtitle: "Indicadores calculados com seus dados reais." },
+  copilot: { kicker: "INTELIGÊNCIA APLICADA", title: "Copiloto IA", subtitle: "Projetos sob medida e recomendações baseadas nos seus dados." },
 };
 
 const emptyData: CRMData = { units: [], programTemplates: [], consultingPrograms: [], projectItems: [], projectKpis: [], kpiMeasurements: [], opportunities: [], contacts: [], clients: [], activities: [] };
@@ -111,6 +115,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
+  const [aiOpportunityId, setAiOpportunityId] = useState<string | null>(null);
   const [opportunityModal, setOpportunityModal] = useState<Opportunity | "new" | null>(null);
   const [contactModal, setContactModal] = useState<Contact | "new" | null>(null);
   const [activityModal, setActivityModal] = useState<Activity | "new" | null>(null);
@@ -323,6 +328,58 @@ export default function Home() {
     setSelectedOpportunity(null);
   }
 
+  async function applyAiProject(draft: AiProjectDraft, unitId: string) {
+    let createdProjectId = "";
+    await perform(async () => {
+      const templateId = await saveProgramTemplate(supabase, {
+        name: draft.name,
+        objective: draft.objective,
+        duration_weeks: draft.duration_weeks,
+        default_role: "main",
+        phases: draft.phases.map((phase) => ({ name: phase.name, objective: phase.objective })),
+      });
+      const main = data.consultingPrograms.find((program) => program.unit_id === unitId && program.role === "main" && programOpenStatuses.includes(program.status));
+      const start = new Date();
+      const end = new Date(start.getTime() + draft.duration_weeks * 7 * 86400000);
+      createdProjectId = await saveConsultingProgram(supabase, {
+        unit_id: unitId,
+        template_id: templateId,
+        parent_program_id: main?.id,
+        role: main ? "track" : "main",
+        name: draft.name,
+        objective: draft.objective,
+        status: "planning",
+        start_date: start.toISOString().slice(0, 10),
+        end_date: end.toISOString().slice(0, 10),
+        current_phase: draft.phases[0]?.name,
+        scope_snapshot: { phases: draft.phases.map((phase) => ({ name: phase.name, objective: phase.objective })), template_name: draft.name, template_version: 1 },
+      });
+      let position = 1000;
+      for (const [phaseIndex, phase] of draft.phases.entries()) {
+        for (const activity of phase.activities) {
+          const due = new Date(start.getTime() + Math.max(0, activity.week - 1) * 7 * 86400000);
+          await saveProjectItem(supabase, {
+            program_id: createdProjectId, phase_index: phaseIndex, kind: "action", title: activity.title,
+            description: activity.description, board_status: "planned", owner_name: activity.owner,
+            due_date: due.toISOString().slice(0, 10), blocked: false,
+            gut_gravity: activity.gut[0], gut_urgency: activity.gut[1], gut_tendency: activity.gut[2], position,
+          });
+          position += 1000;
+        }
+      }
+      const today = start.toISOString().slice(0, 10);
+      for (const kpi of draft.kpis) {
+        await saveProjectKpi(supabase, {
+          program_id: createdProjectId, name: kpi.name, description: kpi.description, category: kpi.category,
+          unit: kpi.unit, direction: kpi.direction, baseline_value: kpi.baseline, current_value: kpi.baseline,
+          target_value: kpi.target, frequency: kpi.frequency, measured_at: today,
+          measurement_note: "Linha de base sugerida pelo Copiloto IA — revisar com a unidade.",
+        });
+      }
+    }, "Projeto criado com escopo, atividades e KPIs", "projects");
+    if (createdProjectId) setSelectedProjectId(createdProjectId);
+  }
+
   async function submitContact(contact: Partial<Contact> & Pick<Contact, "name" | "company" | "segment">) {
     await perform(async () => { await saveContact(supabase, contact); }, contact.id ? "Contato atualizado" : "Contato criado");
     setContactModal(null);
@@ -509,7 +566,9 @@ export default function Home() {
 
   const userName = session.user.user_metadata?.full_name || session.user.email?.split("@")[0] || "Consultor";
   const activePrograms = data.consultingPrograms.filter((item) => programOpenStatuses.includes(item.status));
-  const primaryAction = activeView === "projects"
+  const primaryAction = activeView === "copilot"
+    ? { label: "IA pronta", icon: <Sparkles size={18} />, run: () => undefined }
+    : activeView === "projects"
     ? selectedProject
       ? { label: "Novo item", icon: <Plus size={18} />, run: () => openNewProjectItem() }
       : { label: "Atribuir projeto", icon: <Plus size={18} />, run: () => { setActiveView("units"); setSelectedUnitId(null); } }
@@ -524,7 +583,7 @@ export default function Home() {
   return <div className="crm-shell">
     <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
       <div className="brand"><span className="brand-mark"><Sparkles size={19} /></span><span>Nexo <strong>CRM</strong></span><button className="icon-button close-menu" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)}><X size={19} /></button></div>
-      <nav className="main-nav" aria-label="Navegação principal">{navItems.map(({ id, label, icon: Icon }) => <button type="button" key={id} className={`nav-item ${activeView === id ? "active" : ""}`} onClick={() => { setActiveView(id); setQuery(""); setSelectedUnitId(null); setSelectedProjectId(null); setSidebarOpen(false); }}><Icon size={19} /><span>{label}</span>{id === "units" && <b>{data.units.length}</b>}{id === "projects" && <b>{activePrograms.length}</b>}{id === "pipeline" && <b>{openOpportunities.length}</b>}</button>)}</nav>
+      <nav className="main-nav" aria-label="Navegação principal">{navItems.map(({ id, label, icon: Icon }) => <button type="button" key={id} className={`nav-item ${activeView === id ? "active" : ""}`} onClick={() => { setActiveView(id); if (id !== "copilot") setAiOpportunityId(null); setQuery(""); setSelectedUnitId(null); setSelectedProjectId(null); setSidebarOpen(false); }}><Icon size={19} /><span>{label}</span>{id === "units" && <b>{data.units.length}</b>}{id === "projects" && <b>{activePrograms.length}</b>}{id === "pipeline" && <b>{openOpportunities.length}</b>}</button>)}</nav>
       <div className="sidebar-summary"><span>Portfólio ativo</span><strong>{data.units.filter((item) => item.lifecycle_status === "active").length} <small>unidades</small></strong><div><i style={{ width: `${data.units.length ? data.units.filter((item) => item.lifecycle_status === "active").length / data.units.length * 100 : 0}%` }} /></div><small>{activePrograms.length} programas e trilhas em acompanhamento</small></div>
       <button className="profile" type="button" onClick={() => void supabase.auth.signOut()}><span className="avatar profile-avatar">{initials(userName)}</span><span><strong>{userName}</strong><small>{session.user.email}</small></span><LogOut size={15} /></button>
     </aside>
@@ -535,6 +594,7 @@ export default function Home() {
       {error && <div className="error-banner"><AlertIcon /> <span>{error}</span><button aria-label="Fechar erro" onClick={() => setError("")}><X size={16} /></button></div>}
       {loading ? <LoadingPanel /> : <>
         {activeView === "overview" && <Overview units={data.units} programs={data.consultingPrograms} overdue={overdue} upcoming={upcoming} onOpenUnit={(id) => { setSelectedUnitId(id); setActiveView("units"); }} onAddUnit={() => { setUnitModal("new"); setActiveView("units"); }} onNavigate={setActiveView} />}
+        {activeView === "copilot" && <AICopilot units={data.units} opportunities={openOpportunities} initialOpportunityId={aiOpportunityId} onApplyProject={applyAiProject} />}
         {activeView === "projects" && <ProjectsArea selectedProjectId={selectedProjectId} programs={data.consultingPrograms} units={data.units} items={data.projectItems} kpis={data.projectKpis} measurements={data.kpiMeasurements} query={query} setQuery={setQuery} onOpenProject={openProject} onBack={() => setSelectedProjectId(null)} onGoUnits={() => { setSelectedProjectId(null); setActiveView("units"); }} onAddItem={openNewProjectItem} onEditItem={(item) => setProjectItemModal({ initial: item, programId: item.program_id, defaultStatus: item.board_status, defaultPhaseIndex: item.phase_index })} onMoveItem={(id, status, position) => void handleProjectItemMove(id, status, position)} onMoveProject={(project, status) => void handleProjectMove(project, status)} onManageProject={setManagedProgram} onUpdatePhase={(project, phaseIndex, name, objective, makeCurrent) => void handlePhaseUpdate(project, phaseIndex, name, objective, makeCurrent)} onAddKpi={() => setKpiModal("new")} onEditKpi={setKpiModal} />}
         {activeView === "units" && (selectedUnit ? <Unit360 unit={selectedUnit} programs={data.consultingPrograms} onBack={() => setSelectedUnitId(null)} onEdit={() => setUnitModal(selectedUnit)} onDelete={() => void removeUnit(selectedUnit)} onAssign={(role) => setProgramModal({ unit: selectedUnit, role })} onManageProgram={setManagedProgram} onOpenProject={openProject} /> : <UnitsView units={filteredUnits} programs={data.consultingPrograms} query={query} setQuery={setQuery} onAdd={() => setUnitModal("new")} onEdit={setUnitModal} onOpen={setSelectedUnitId} />)}
         {activeView === "programs" && <ProgramsView templates={data.programTemplates} programs={data.consultingPrograms} onAdd={() => setTemplateModal("new")} onEdit={setTemplateModal} onDelete={(template) => void removeTemplate(template)} />}
@@ -556,7 +616,7 @@ export default function Home() {
     {managedProgram && <ProgramManageModal program={managedProgram} busy={busy} onClose={() => setManagedProgram(null)} onSubmit={submitManagedProgram} onDelete={removeProgram} />}
     {projectItemModal && <ProjectItemModal initial={projectItemModal.initial} programId={projectItemModal.programId} phases={data.consultingPrograms.find((program) => program.id === projectItemModal.programId)?.scope_snapshot.phases ?? []} defaultStatus={projectItemModal.defaultStatus} defaultPhaseIndex={projectItemModal.defaultPhaseIndex} nextPosition={Math.max(0, ...data.projectItems.filter((item) => item.program_id === projectItemModal.programId).map((item) => item.position)) + 1000} busy={busy} onClose={() => setProjectItemModal(null)} onSubmit={submitProjectItem} onDelete={(item) => void removeProjectItem(item)} />}
     {kpiModal && selectedProject && <KpiModal key={kpiModal === "new" ? "new" : kpiModal.id} initial={kpiModal === "new" ? null : kpiModal} programId={selectedProject.id} busy={busy} onClose={() => setKpiModal(null)} onSubmit={submitProjectKpi} onDelete={(kpi) => void removeProjectKpi(kpi)} />}
-    {selectedOpportunity && <OpportunityDrawer item={selectedOpportunity} busy={busy} onClose={() => setSelectedOpportunity(null)} onMove={handleMove} onEdit={(item) => { setOpportunityModal(item); setSelectedOpportunity(null); }} onWon={markWon} onLost={markLost} onArchive={archiveOpportunity} onDelete={removeOpportunity} />}
+    {selectedOpportunity && <OpportunityDrawer item={selectedOpportunity} busy={busy} onClose={() => setSelectedOpportunity(null)} onMove={handleMove} onEdit={(item) => { setOpportunityModal(item); setSelectedOpportunity(null); }} onAskAi={(item) => { setAiOpportunityId(item.id); setSelectedOpportunity(null); setActiveView("copilot"); }} onWon={markWon} onLost={markLost} onArchive={archiveOpportunity} onDelete={removeOpportunity} />}
     {busy && <div className="busy-indicator"><LoaderCircle size={16} className="spin" /> Salvando</div>}
     {notice && <div className="toast" role="status"><CheckCircle2 size={17} /> {notice}</div>}
   </div>;
@@ -931,8 +991,8 @@ function ClientModal({ client, busy, onClose, onSubmit, onDelete }: { client: Cl
   return <Modal title="Gerenciar cliente" kicker="CARTEIRA" onClose={onClose}><form onSubmit={submit}><label>Cliente<input name="name" required defaultValue={client.name} /></label><label>Projeto<input name="project" required defaultValue={client.project} /></label><div className="form-row three"><label>Valor mensal<input name="monthly_value" type="number" min="0" step="100" defaultValue={client.monthly_value} /></label><label>Saúde (%)<input name="health" type="number" min="0" max="100" defaultValue={client.health} /></label><label>Progresso (%)<input name="progress" type="number" min="0" max="100" defaultValue={client.progress} /></label></div><label>Próxima ação<input name="next_action" defaultValue={client.next_action || ""} /></label><div className="form-row"><label>Data da próxima ação<input name="next_action_at" type="datetime-local" defaultValue={toDateInput(client.next_action_at)} /></label><label>Status<select name="status" defaultValue={client.status}><option value="active">Ativo</option><option value="paused">Pausado</option><option value="completed">Concluído</option><option value="cancelled">Cancelado</option></select></label></div><div className="modal-footer"><button className="danger-button" type="button" onClick={() => onDelete(client)}><Trash2 size={15} /> Excluir</button><ModalActions busy={busy} onClose={onClose} label="Salvar cliente" /></div></form></Modal>;
 }
 
-function OpportunityDrawer({ item, busy, onClose, onMove, onEdit, onWon, onLost, onArchive, onDelete }: { item: Opportunity; busy: boolean; onClose: () => void; onMove: (id: string, stage: Stage) => void; onEdit: (item: Opportunity) => void; onWon: (item: Opportunity) => void; onLost: (item: Opportunity) => void; onArchive: (item: Opportunity) => void; onDelete: (item: Opportunity) => void }) {
-  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><span className={`priority-pill ${item.priority}`}>{item.priority === "urgent" ? "Prioridade alta" : item.priority === "attention" ? "Atenção" : "Em dia"}</span><button className="icon-button" onClick={onClose}><X size={19} /></button></div><span className="eyebrow">OPORTUNIDADE</span><h2>{item.company}</h2><p className="drawer-value">{money.format(item.value)}</p><div className="drawer-grid"><div><span>Probabilidade</span><strong>{item.probability}%</strong></div><div><span>Próxima ação</span><strong>{item.due_date ? shortDate.format(new Date(`${item.due_date}T12:00:00`)) : "Sem prazo"}</strong></div></div><div className="drawer-section"><h3>Contato principal</h3><div className="drawer-contact"><span className="avatar">{initials(item.contact?.name || item.company)}</span><span><strong>{item.contact?.name || "Sem contato"}</strong><small>{item.segment}</small></span></div>{item.contact?.email && <a href={`mailto:${item.contact.email}`}><Mail size={15} /> {item.contact.email}</a>}{item.contact?.phone && <a href={`tel:${item.contact.phone.replace(/\D/g, "")}`}><Phone size={15} /> {item.contact.phone}</a>}</div><div className="drawer-section"><h3>Mover para</h3><div className="stage-options">{stages.map((stage) => <button className={item.stage === stage.id ? "active" : ""} disabled={busy} key={stage.id} onClick={() => onMove(item.id, stage.id)}>{stage.label}</button>)}</div></div>{item.notes && <div className="drawer-section"><h3>Observações</h3><p className="drawer-notes">{item.notes}</p></div>}<div className="drawer-actions"><button className="secondary-button" onClick={() => onEdit(item)}><Pencil size={15} /> Editar</button><button className="win-button" onClick={() => onWon(item)}><Trophy size={15} /> Ganhar</button><button className="secondary-button" onClick={() => onLost(item)}><CircleX size={15} /> Perder</button><button className="secondary-button" onClick={() => onArchive(item)}><Archive size={15} /> Arquivar</button><button className="danger-button" onClick={() => onDelete(item)}><Trash2 size={15} /> Excluir</button></div></aside></div>;
+function OpportunityDrawer({ item, busy, onClose, onMove, onEdit, onAskAi, onWon, onLost, onArchive, onDelete }: { item: Opportunity; busy: boolean; onClose: () => void; onMove: (id: string, stage: Stage) => void; onEdit: (item: Opportunity) => void; onAskAi: (item: Opportunity) => void; onWon: (item: Opportunity) => void; onLost: (item: Opportunity) => void; onArchive: (item: Opportunity) => void; onDelete: (item: Opportunity) => void }) {
+  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><span className={`priority-pill ${item.priority}`}>{item.priority === "urgent" ? "Prioridade alta" : item.priority === "attention" ? "Atenção" : "Em dia"}</span><button className="icon-button" onClick={onClose}><X size={19} /></button></div><span className="eyebrow">OPORTUNIDADE</span><h2>{item.company}</h2><p className="drawer-value">{money.format(item.value)}</p><button className="ai-lead-cta" onClick={() => onAskAi(item)}><span><Bot size={18} /></span><span><strong>Analisar este lead com IA</strong><small>Próximo passo, riscos e mensagem sugerida</small></span><ArrowRight size={15} /></button><div className="drawer-grid"><div><span>Probabilidade</span><strong>{item.probability}%</strong></div><div><span>Próxima ação</span><strong>{item.due_date ? shortDate.format(new Date(`${item.due_date}T12:00:00`)) : "Sem prazo"}</strong></div></div><div className="drawer-section"><h3>Contato principal</h3><div className="drawer-contact"><span className="avatar">{initials(item.contact?.name || item.company)}</span><span><strong>{item.contact?.name || "Sem contato"}</strong><small>{item.segment}</small></span></div>{item.contact?.email && <a href={`mailto:${item.contact.email}`}><Mail size={15} /> {item.contact.email}</a>}{item.contact?.phone && <a href={`tel:${item.contact.phone.replace(/\D/g, "")}`}><Phone size={15} /> {item.contact.phone}</a>}</div><div className="drawer-section"><h3>Mover para</h3><div className="stage-options">{stages.map((stage) => <button className={item.stage === stage.id ? "active" : ""} disabled={busy} key={stage.id} onClick={() => onMove(item.id, stage.id)}>{stage.label}</button>)}</div></div>{item.notes && <div className="drawer-section"><h3>Observações</h3><p className="drawer-notes">{item.notes}</p></div>}<div className="drawer-actions"><button className="secondary-button" onClick={() => onEdit(item)}><Pencil size={15} /> Editar</button><button className="win-button" onClick={() => onWon(item)}><Trophy size={15} /> Ganhar</button><button className="secondary-button" onClick={() => onLost(item)}><CircleX size={15} /> Perder</button><button className="secondary-button" onClick={() => onArchive(item)}><Archive size={15} /> Arquivar</button><button className="danger-button" onClick={() => onDelete(item)}><Trash2 size={15} /> Excluir</button></div></aside></div>;
 }
 
 function Modal({ title, kicker, onClose, children }: { title: string; kicker: string; onClose: () => void; children: ReactNode }) { return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">{kicker}</span><h2>{title}</h2></div><button className="icon-button" aria-label="Fechar" onClick={onClose}><X size={19} /></button></div>{children}</section></div>; }
